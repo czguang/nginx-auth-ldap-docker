@@ -3,12 +3,13 @@
 #
 # PLEASE DO NOT EDIT IT DIRECTLY.
 #
-FROM alpine:3.17
+FROM alpine:3.22
 
 LABEL maintainer="NGINX Docker Maintainers <docker-maint@nginx.com>"
 
-ENV NGINX_VERSION 1.23.3
-ENV PKG_RELEASE   1
+ENV NGINX_VERSION  1.29.3
+ENV PKG_RELEASE    1
+ENV DYNPKG_RELEASE 1
 
 RUN set -x \
 # create nginx user/group first, to be consistent throughout docker variants
@@ -53,11 +54,12 @@ RUN set -x \
                 bash \
                 alpine-sdk \
                 findutils \
+                curl \
             && su nobody -s /bin/sh -c " \
                 export HOME=${tempDir} \
                 && cd ${tempDir} \
-                && curl -f -O https://hg.nginx.org/pkg-oss/archive/${NGINX_VERSION}-${PKG_RELEASE}.tar.gz \
-                && PKGOSSCHECKSUM=\"52a80f6c3b3914462f8a0b2fbadea950bcd79c1bd528386aff4c28d5a80c6920d783575a061a47b60fea800eef66bf5a0178a137ea51c37277fe9c2779715990 *${NGINX_VERSION}-${PKG_RELEASE}.tar.gz\" \
+                && curl -f -L -O https://github.com/nginx/pkg-oss/archive/${NGINX_VERSION}-${PKG_RELEASE}.tar.gz \
+                && PKGOSSCHECKSUM=\"249858446828ace0c81ea3e057135aa368f3dab83430cf867bb9fc32598948f29c4bd50908491da704536af1106aa87553f6a76cc126c6833dc9b14dd00564b8 *${NGINX_VERSION}-${PKG_RELEASE}.tar.gz\" \
                 && if [ \"\$(openssl sha512 -r ${NGINX_VERSION}-${PKG_RELEASE}.tar.gz)\" = \"\$PKGOSSCHECKSUM\" ]; then \
                     echo \"pkg-oss tarball checksum verification succeeded!\"; \
                 else \
@@ -68,37 +70,21 @@ RUN set -x \
                 && cd pkg-oss-${NGINX_VERSION}-${PKG_RELEASE} \
                 && cd alpine \
                 && make base \
-                && apk index -o ${tempDir}/packages/alpine/${apkArch}/APKINDEX.tar.gz ${tempDir}/packages/alpine/${apkArch}/*.apk \
+                && apk index --allow-untrusted -o ${tempDir}/packages/alpine/${apkArch}/APKINDEX.tar.gz ${tempDir}/packages/alpine/${apkArch}/*.apk \
                 && abuild-sign -k ${tempDir}/.abuild/abuild-key.rsa ${tempDir}/packages/alpine/${apkArch}/APKINDEX.tar.gz \
                 " \
             && cp ${tempDir}/.abuild/abuild-key.rsa.pub /etc/apk/keys/ \
-            && apk del .build-deps \
+            && apk del --no-network .build-deps \
             && apk add -X ${tempDir}/packages/alpine/ --no-cache $nginxPackages \
             ;; \
     esac \
 # remove checksum deps
-    && apk del .checksum-deps \
+    && apk del --no-network .checksum-deps \
 # if we have leftovers from building, let's purge them (including extra, unnecessary build deps)
     && if [ -n "$tempDir" ]; then rm -rf "$tempDir"; fi \
-    && if [ -n "/etc/apk/keys/abuild-key.rsa.pub" ]; then rm -f /etc/apk/keys/abuild-key.rsa.pub; fi \
-    && if [ -n "/etc/apk/keys/nginx_signing.rsa.pub" ]; then rm -f /etc/apk/keys/nginx_signing.rsa.pub; fi \
-# Bring in gettext so we can get `envsubst`, then throw
-# the rest away. To do this, we need to install `gettext`
-# then move `envsubst` out of the way so `gettext` can
-# be deleted completely, then move `envsubst` back.
-    && apk add --no-cache --virtual .gettext gettext \
-    && mv /usr/bin/envsubst /tmp/ \
-    \
-    && runDeps="$( \
-        scanelf --needed --nobanner /tmp/envsubst \
-            | awk '{ gsub(/,/, "\nso:", $2); print "so:" $2 }' \
-            | sort -u \
-            | xargs -r apk info --installed \
-            | sort -u \
-    )" \
-    && apk add --no-cache $runDeps \
-    && apk del .gettext \
-    && mv /tmp/envsubst /usr/local/bin/ \
+    && if [ -f "/etc/apk/keys/abuild-key.rsa.pub" ]; then rm -f /etc/apk/keys/abuild-key.rsa.pub; fi \
+# Add `envsubst` for templating environment variables
+    && apk add --no-cache gettext-envsubst \
 # Bring in tzdata so users could set the timezones through the environment
 # variables
     && apk add --no-cache tzdata \
@@ -110,6 +96,7 @@ RUN set -x \
 
 COPY docker-entrypoint.sh /
 COPY 10-listen-on-ipv6-by-default.sh /docker-entrypoint.d
+COPY 15-local-resolvers.envsh /docker-entrypoint.d
 COPY 20-envsubst-on-templates.sh /docker-entrypoint.d
 COPY 30-tune-worker-processes.sh /docker-entrypoint.d
 ENTRYPOINT ["/docker-entrypoint.sh"]
